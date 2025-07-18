@@ -294,6 +294,7 @@ class InstanceStats(PydanticBaseModel):
 
     instance_cost: float = 0
     tokens_sent: int = 0
+    input_tokens: int = 0
     tokens_received: int = 0
     api_calls: int = 0
 
@@ -636,6 +637,7 @@ class LiteLLMModel(AbstractModel):
         self.stats.tokens_sent += input_tokens
         self.stats.tokens_received += output_tokens
         self.stats.api_calls += 1
+        self.stats.input_tokens = input_tokens
 
         # Log updated cost values to std. err
         self.logger.debug(

@@ -1226,6 +1226,7 @@ class DefaultAgent(AbstractAgent):
                 "state": step.state,
                 "query": step.query,
                 "extra_info": step.extra_info,
+                "input_tokens": self.model.stats.input_tokens,
             },
         )
         self.trajectory.append(trajectory_step)
