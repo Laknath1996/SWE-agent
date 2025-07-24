@@ -5,6 +5,11 @@ agent:
   templates:
     system_template: |-
       You are a helpful assistant that can interact with a computer to solve tasks.
+    recompose_instructions: |-
+      At various steps, you will receive a summary outlining your current progress in solving a problem.
+      These summaries may include important information relevant to the task.
+      Use the information in the summary to either continue solving the problem or provide the final patch.
+      At the begining, the summary will be empty.
     instance_template: |-
       <uploaded_files>
       {{working_dir}}
@@ -30,6 +35,34 @@ agent:
       {{observation}}
     next_step_no_output_template: |-
       Your command ran successfully and did not produce any output.
+    recompose_template: |-
+      You are given a partial trace that outlines the steps taken so far toward solving a task.
+      Your task is to output a short summary of your own progress up to this point.
+      Write in the first person, as if you are explaining what you have done so far.
+      Focus on the key steps you've taken, the discoveries you have made, and any intermediate insights.
+      You may choose to retain useful code snippets or intermediate results that can be helpful for the next steps.
+      Preserve the details of the plan you were going to follow. 
+      When summarizing, consider all the thoughts, tool-calls, and tool-responses included in the trace.
+      Include any important lessons you learned from the error messages within tool-responses, if any.
+      Do not guess the final solution or go beyond the information you've already found.
+      Clearly indicate the steps and milestones you have already completed.
+      Write down the next steps you plan to take to continue solving the task.
+      After you summarize your progress so far, you will lose access to the trace and will have to continue solving the task based on the summary you output.
+      Therefore, make sure to include all the relevant information in your summary and discard any unnecessary details.
+
+      Here is the trace you have followed so far:
+      {{trace}}
+
+      Now summarize your progress!
+    summary_template: |-
+      Summary of the ASSISTANT's progress so far:
+      
+      {{summary}}
+      
+      Based on this summary, you should now either proceed with solving the task or provide the final patch.
+      Do not repeat the steps you have already completed. 
+      Focus on the next steps you plan to take.
+      If you think you have completed the task, provide the final patch.
   tools:
     env_variables:
       PAGER: cat
