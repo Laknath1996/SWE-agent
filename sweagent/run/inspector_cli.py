@@ -94,8 +94,12 @@ class TrajectoryViewer(Static):
         thought = item.get("thought", "")
         action = item.get("action", "")
         observation = item.get("observation", "")
+        summary = item.get("summary", "")  # Use summary if available
 
-        content_str = f"THOUGHT:\n{thought}\n\nACTION:\n{action}\n\nOBSERVATION:\n{observation}"
+        if summary:            
+            content_str = f"SUMMMARY:\n{summary}"
+        else:
+            content_str = f"THOUGHT:\n{thought}\n\nACTION:\n{action}\n\nOBSERVATION:\n{observation}"
         content = self.query_one("#content")
         content.update(content_str)  # type: ignore
 
