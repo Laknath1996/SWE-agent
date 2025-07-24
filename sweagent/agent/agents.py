@@ -7,6 +7,7 @@ import logging
 import time
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Literal
+from dataclasses import dataclass
 
 import yaml
 from jinja2 import Template
@@ -65,6 +66,10 @@ class TemplateConfig(BaseModel):
     system_template: str = ""
     instance_template: str = ""
     next_step_template: str = "Observation: {{observation}}"
+
+    recompose_instructions: str = ""
+    recompose_template: str = ""
+    summary_template: str = ""
 
     next_step_truncated_observation_template: str = (
         "Observation: {{observation[:max_observation_length]}}<response clipped>"
@@ -146,6 +151,16 @@ class TemplateConfig(BaseModel):
         return self
 
 
+class RecomposeConfig(BaseModel):
+    """Configuration for the recompose feature of the agent.
+    This feature allows to recompose the agent's trajectory after a certain number of steps.
+    """
+    recompose: bool = False
+    type: Literal["manual-freq", "manual-tokens", "auto"] = "manual-freq"
+    freq: int = 4
+    tokens: int = 20000
+
+
 class DefaultAgentConfig(BaseModel):
     """This configuration object specifies the behavior of an agent."""
 
@@ -155,10 +170,15 @@ class DefaultAgentConfig(BaseModel):
     history_processors: list[HistoryProcessor] = Field(default_factory=lambda: [DefaultHistoryProcessor()])
     model: ModelConfig = Field(description="Model options.")
 
+    recompose_config: RecomposeConfig = Field(default_factory=RecomposeConfig)
+
     max_requeries: int = 3
     """Maximum number of times to requery the model after an error, such as a
     formatting error, a blocked action, or a bash syntax error.
     """
+
+    max_steps: int = 60
+
     action_sampler: ActionSamplerConfig | None = None
 
     type: Literal["default"] = "default"
@@ -448,7 +468,9 @@ class DefaultAgent(AbstractAgent):
         tools: ToolHandler,
         history_processors: list[HistoryProcessor],
         model: AbstractModel,
+        recompose_config: RecomposeConfig,
         max_requeries: int = 3,
+        max_steps: int = 60,
         name: str = "main",
         _catch_errors: bool = True,
         _always_require_zero_exit_code: bool = False,
@@ -462,6 +484,7 @@ class DefaultAgent(AbstractAgent):
         self._always_require_zero_exit_code = _always_require_zero_exit_code
         self.name = name
         self.model = model
+        self.recompose_config = recompose_config
         self.templates = templates
         self.tools = tools
         if isinstance(self.model, HumanThoughtModel):
@@ -470,6 +493,7 @@ class DefaultAgent(AbstractAgent):
             self.tools.config.parse_function = ActionOnlyParser()
         self.history_processors = history_processors
         self.max_requeries = max_requeries
+        self.max_steps = max_steps
         self.logger = get_logger("swea-agent", emoji="🤠")
         # Set in run method
         self._env: SWEEnv | None = None
@@ -509,7 +533,9 @@ class DefaultAgent(AbstractAgent):
             tools=ToolHandler(config.tools),
             history_processors=config.history_processors,
             model=model,
+            recompose_config=config.recompose_config,
             max_requeries=config.max_requeries,
+            max_steps=config.max_steps,
             action_sampler_config=config.action_sampler,
         )
 
@@ -603,12 +629,25 @@ class DefaultAgent(AbstractAgent):
         self.add_system_message_to_history()
         self.add_demonstrations_to_history()
         self.add_instance_template_to_history(state=self.tools.get_state(self._env))
+        if self.recompose_config.recompose:
+            self._append_history(
+                    {
+                        "role": "user",
+                        "content": "",
+                        "agent": self.name,
+                        "message_type": "summary",
+                    }
+                )
         self._chook.on_setup_done()
 
     def add_system_message_to_history(self) -> None:
         """Add system message to history"""
         assert self._problem_statement is not None
         system_msg = Template(self.templates.system_template).render(**self._get_format_dict())
+    
+        if self.recompose_config.recompose:
+            system_msg += "\n" + Template(self.templates.recompose_instructions).render()
+
         self.logger.info(f"SYSTEM ({self.name})\n{system_msg}")
         self._append_history(
             {"role": "system", "content": system_msg, "agent": self.name, "message_type": "system_prompt"}
@@ -1222,6 +1261,7 @@ class DefaultAgent(AbstractAgent):
                 "observation": step.observation,
                 "response": step.output,
                 "thought": step.thought,
+                "summary": step.summary,
                 "execution_time": step.execution_time,
                 "state": step.state,
                 "query": step.query,
@@ -1230,6 +1270,19 @@ class DefaultAgent(AbstractAgent):
             },
         )
         self.trajectory.append(trajectory_step)
+
+    def recompose(self, current_trace: list[dict[str, Any]]) -> str:
+        """Recompose the agent's history into a summary."""
+        recompose_message = {
+            "role": "user",
+            "content": Template(self.templates.recompose_template).render(
+                trace=current_trace,
+            ),
+            "agent": self.name,
+            "message_type": "observation",
+        }
+        summary = self.model.query([recompose_message])["message"]
+        return summary
 
     def step(self) -> StepOutput:
         """Run a step of the agent. This is a wrapper around `self.forward_with_handling`
@@ -1245,9 +1298,40 @@ class DefaultAgent(AbstractAgent):
 
         assert self._env is not None
         self._chook.on_step_start()
+        
+        recompose_now = False
 
         n_step = len(self.trajectory) + 1
         self.logger.info("=" * 25 + f" STEP {n_step} " + "=" * 25)
+        n_input_tokens = self.model.stats.input_tokens
+
+        if self.recompose_config.recompose:
+            if self.recompose_config.type == "manual-freq" and n_step % self.recompose_config.freq == 0:
+                recompose_now = True
+
+            if self.recompose_config.type == "manual-tokens" and n_input_tokens >= self.recompose_config.tokens:
+                recompose_now = True
+
+            if recompose_now:
+                current_trace = self.messages.copy()
+                summary = self.recompose(current_trace)
+                self.history = []
+                self.add_system_message_to_history()
+                self.add_demonstrations_to_history()
+                self.add_instance_template_to_history(state=self.tools.get_state(self._env))
+                self._append_history(
+                    {
+                        "role": "user",
+                        "content": Template(self.templates.summary_template).render(summary=summary),
+                        "agent": self.name,
+                        "message_type": "summary",
+                    }
+                )
+                self.logger.debug(self.history[-1]["content"])
+                step_output = StepOutput()
+                step_output.summary = self.history[-1]["content"]
+                self.add_step_to_trajectory(step_output)
+
         step_output = self.forward_with_handling(self.messages)
         self.add_step_to_history(step_output)
 
@@ -1277,12 +1361,15 @@ class DefaultAgent(AbstractAgent):
         """
         self.setup(env=env, problem_statement=problem_statement, output_dir=output_dir)
 
+        n_steps = 0
+
         # Run action/observation loop
         self._chook.on_run_start()
         step_output = StepOutput()
-        while not step_output.done:
+        while not step_output.done and n_steps < self.max_steps:
             step_output = self.step()
             self.save_trajectory()
+            n_steps += 1
         self._chook.on_run_done(trajectory=self.trajectory, info=self.info)
 
         self.logger.info("Trajectory saved to %s", self.traj_path)
