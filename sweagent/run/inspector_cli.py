@@ -105,11 +105,21 @@ class TrajectoryViewer(Static):
 
         self.app.sub_title = f"{self.title} - Step {self.i_step + 1}/{self.n_steps} - Simple View"
 
+    def _show_initial_prompt(self) -> str:
+        """Show initial prompt of the trajectory."""
+        item = self.trajectory["trajectory"][0]
+        system_instructions = item["query"][0]["content"]
+        task = item["query"][1]["content"][0]["text"]
+        content_str = f"SYSTEM INSTRUCTIONS:\n{system_instructions}\n\nTASK:\n{task}"
+        return content_str
+
     def _show_info(self):
         info = copy.deepcopy(self.trajectory["info"])
         info["result"] = self.overview_stats["result"]
         info["gold_patch"] = self.gold_patch
-        info = _move_items_top(info, ["result", "exit_status", "model_stats", "submission", "gold_patch"])
+        initial_prompt = self._show_initial_prompt()
+        info["initial_prompt"] = initial_prompt
+        info = _move_items_top(info, ["initial_prompt", "result", "exit_status", "model_stats", "submission", "gold_patch"])
         syntax = Syntax(_yaml_serialization_with_linebreaks(info), "yaml", theme="monokai", word_wrap=True)
         content = self.query_one("#content")
         content.update(syntax)  # type: ignore
@@ -120,6 +130,8 @@ class TrajectoryViewer(Static):
         print(self.i_step)
         if self.i_step < 0 or self.i_step >= self.n_steps:
             return self._show_info()
+        # elif self.i_step == 0:
+        #     return self._show_initial_prompt(self.trajectory["trajectory"][0])
 
         item = self.trajectory["trajectory"][self.i_step]
 
