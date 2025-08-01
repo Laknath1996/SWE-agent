@@ -68,6 +68,7 @@ class TemplateConfig(BaseModel):
     next_step_template: str = "Observation: {{observation}}"
 
     recompose_instructions: str = ""
+    auto_recompose_instructions: str = ""
     recompose_template: str = ""
     summary_template: str = ""
 
@@ -629,15 +630,6 @@ class DefaultAgent(AbstractAgent):
         self.add_system_message_to_history()
         self.add_demonstrations_to_history()
         self.add_instance_template_to_history(state=self.tools.get_state(self._env))
-        if self.recompose_config.recompose:
-            self._append_history(
-                    {
-                        "role": "user",
-                        "content": "",
-                        "agent": self.name,
-                        "message_type": "summary",
-                    }
-                )
         self._chook.on_setup_done()
 
     def add_system_message_to_history(self) -> None:
@@ -646,7 +638,10 @@ class DefaultAgent(AbstractAgent):
         system_msg = Template(self.templates.system_template).render(**self._get_format_dict())
     
         if self.recompose_config.recompose:
-            system_msg += "\n" + Template(self.templates.recompose_instructions).render()
+            if self.recompose_config.type == "auto":
+                system_msg += "\n" + Template(self.templates.auto_recompose_instructions).render()
+            else:
+                system_msg += "\n" + Template(self.templates.recompose_instructions).render()
 
         self.logger.info(f"SYSTEM ({self.name})\n{system_msg}")
         self._append_history(
@@ -1273,9 +1268,38 @@ class DefaultAgent(AbstractAgent):
 
     def recompose(self, current_trace: list[dict[str, Any]]) -> str:
         """Recompose the agent's history into a summary."""
+
+        ## Use this function below reduce the token count due to json formatting
+        def history_to_messages(history):
+            def get_role(history_item) -> str:
+                if history_item["role"] == "system":
+                    return history_item["role"]
+
+            messages = []
+            for history_item in history:
+                role = get_role(history_item)
+                if role == "tool":
+                    message = {
+                        "role": role,
+                        "content": history_item["content"],
+                        # Only one tool call per observations
+                        "tool_call_id": history_item["tool_call_ids"][0],  # type: ignore
+                    }
+                elif (tool_calls := history_item.get("tool_calls")) is not None:
+                    message = {"role": role, "content": history_item["content"], "tool_calls": tool_calls}
+                else:
+                    message = {"role": role, "content": history_item["content"]}
+                if "cache_control" in history_item:
+                    message["cache_control"] = history_item["cache_control"]
+                messages.append(message)
+            return messages
+
         recompose_message = {
             "role": "user",
             "content": Template(self.templates.recompose_template).render(
+                problem_statement=Template(self.templates.instance_template).render(
+                    **self._get_format_dict(),
+                ),
                 trace=current_trace,
             ),
             "agent": self.name,
@@ -1305,16 +1329,20 @@ class DefaultAgent(AbstractAgent):
         self.logger.info("=" * 25 + f" STEP {n_step} " + "=" * 25)
         n_input_tokens = self.model.stats.input_tokens
 
-        if self.recompose_config.recompose:
+        if self.recompose_config.recompose and not self.submit_invoked:
             if self.recompose_config.type == "manual-freq" and n_step % self.recompose_config.freq == 0:
                 recompose_now = True
 
             if self.recompose_config.type == "manual-tokens" and n_input_tokens >= self.recompose_config.tokens:
                 recompose_now = True
 
+            if self.recompose_config.type == "auto" and self.auto_recompose:
+                recompose_now = True
+                self.auto_recompose = False
+
             if recompose_now:
                 current_trace = self.messages.copy()
-                summary = self.recompose(current_trace)
+                summary = self.recompose(current_trace[3:])
                 self.history = []
                 self.add_system_message_to_history()
                 self.add_demonstrations_to_history()
@@ -1334,6 +1362,12 @@ class DefaultAgent(AbstractAgent):
 
         step_output = self.forward_with_handling(self.messages)
         self.add_step_to_history(step_output)
+
+        if "submit" in step_output.action:
+            self.submit_invoked = True
+
+        if "recompose" in step_output.action:
+            self.auto_recompose = True
 
         self.info["submission"] = step_output.submission
         self.info["exit_status"] = step_output.exit_status  # type: ignore
@@ -1366,6 +1400,10 @@ class DefaultAgent(AbstractAgent):
         # Run action/observation loop
         self._chook.on_run_start()
         step_output = StepOutput()
+
+        self.submit_invoked = False
+        self.auto_recompose = False
+
         while not step_output.done and n_steps < self.max_steps:
             step_output = self.step()
             self.save_trajectory()
