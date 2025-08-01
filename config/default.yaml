@@ -6,10 +6,9 @@ agent:
     system_template: |-
       You are a helpful assistant that can interact with a computer to solve tasks.
     recompose_instructions: |-
-      At various steps, you will receive a summary outlining your current progress in solving a problem.
+      At certain steps, you will receive a summary outlining your current progress in solving a task.
       These summaries may include important information relevant to the task.
-      Use the information in the summary to either continue solving the problem or provide the final patch.
-      At the begining, the summary will be empty.
+      Use the information in the summary to either continue solving the problem or provide the final solution.
     instance_template: |-
       <uploaded_files>
       {{working_dir}}
@@ -50,7 +49,10 @@ agent:
       After you summarize your progress so far, you will lose access to the trace and will have to continue solving the task based on the summary you output.
       Therefore, make sure to include all the relevant information in your summary and discard any unnecessary details.
 
-      Here is the trace you have followed so far:
+      Here is the task you are asked to solve:
+      {{problem_statement}}
+
+      Here are steps you have taken so far:
       {{trace}}
 
       Now summarize your progress!
@@ -59,10 +61,10 @@ agent:
       
       {{summary}}
       
-      Based on this summary, you should now either proceed with solving the task or provide the final patch.
+      Based on this summary, you should now either proceed with solving the task or provide the final solution.
       Do not repeat the steps you have already completed. 
       Focus on the next steps you plan to take.
-      If you think you have completed the task, provide the final patch.
+      If you think you have completed the task, provide the final solution.
   tools:
     env_variables:
       PAGER: cat
