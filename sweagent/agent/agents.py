@@ -67,7 +67,6 @@ class TemplateConfig(BaseModel):
     instance_template: str = ""
     next_step_template: str = "Observation: {{observation}}"
 
-    recompose_instructions: str = ""
     auto_recompose_instructions: str = ""
     recompose_template: str = ""
     summary_template: str = ""
@@ -636,17 +635,12 @@ class DefaultAgent(AbstractAgent):
         """Add system message to history"""
         assert self._problem_statement is not None
         system_msg = Template(self.templates.system_template).render(**self._get_format_dict())
-    
-        if self.recompose_config.recompose:
-            if self.recompose_config.type == "auto":
-                system_msg += "\n" + Template(self.templates.auto_recompose_instructions).render()
-            else:
-                system_msg += "\n" + Template(self.templates.recompose_instructions).render()
 
         self.logger.info(f"SYSTEM ({self.name})\n{system_msg}")
         self._append_history(
             {"role": "system", "content": system_msg, "agent": self.name, "message_type": "system_prompt"}
         )
+        self.logger.debug(system_msg)
 
     def add_demonstrations_to_history(self) -> None:
         """Add demonstrations to history"""
@@ -786,7 +780,13 @@ class DefaultAgent(AbstractAgent):
         # Determine observation template based on what prior observation was
         assert self.history[-1]["role"] == "system" or self.history[-1].get("is_demo", False)
         # Show instance template if prev. obs. was initial system message
-        templates = [self.templates.instance_template]
+
+        instance_template = self.templates.instance_template
+        if self.recompose_config.recompose and self.recompose_config.type == "auto":
+            instance_template += "\n\n" + Template(self.templates.auto_recompose_instructions).render()
+
+        # templates = [self.templates.instance_template]
+        templates = [instance_template]
         if self.templates.strategy_template is not None:
             templates.append(self.templates.strategy_template)
 
@@ -1269,42 +1269,39 @@ class DefaultAgent(AbstractAgent):
     def recompose(self, current_trace: list[dict[str, Any]]) -> str:
         """Recompose the agent's history into a summary."""
 
-        ## Use this function below reduce the token count due to json formatting
-        def history_to_messages(history):
-            def get_role(history_item) -> str:
-                if history_item["role"] == "system":
-                    return history_item["role"]
+        # ## Use this function below reduce the token count due to json formatting
+        # def history_to_messages(history):
+        #     def get_role(history_item) -> str:
+        #         if history_item["role"] == "system":
+        #             return history_item["role"]
 
-            messages = []
-            for history_item in history:
-                role = get_role(history_item)
-                if role == "tool":
-                    message = {
-                        "role": role,
-                        "content": history_item["content"],
-                        # Only one tool call per observations
-                        "tool_call_id": history_item["tool_call_ids"][0],  # type: ignore
-                    }
-                elif (tool_calls := history_item.get("tool_calls")) is not None:
-                    message = {"role": role, "content": history_item["content"], "tool_calls": tool_calls}
-                else:
-                    message = {"role": role, "content": history_item["content"]}
-                if "cache_control" in history_item:
-                    message["cache_control"] = history_item["cache_control"]
-                messages.append(message)
-            return messages
+        #     messages = []
+        #     for history_item in history:
+        #         role = get_role(history_item)
+        #         if role == "tool":
+        #             message = {
+        #                 "role": role,
+        #                 "content": history_item["content"],
+        #                 # Only one tool call per observations
+        #                 "tool_call_id": history_item["tool_call_ids"][0],  # type: ignore
+        #             }
+        #         elif (tool_calls := history_item.get("tool_calls")) is not None:
+        #             message = {"role": role, "content": history_item["content"], "tool_calls": tool_calls}
+        #         else:
+        #             message = {"role": role, "content": history_item["content"]}
+        #         messages.append(message)
+        #     return messages
 
         recompose_message = {
             "role": "user",
             "content": Template(self.templates.recompose_template).render(
-                problem_statement=Template(self.templates.instance_template).render(
-                    **self._get_format_dict(),
-                ),
+                problem_statement=Template(self.templates.instance_template).render(**self._get_format_dict()),
                 trace=current_trace,
             ),
             "agent": self.name,
             "message_type": "observation",
         }
+        self.logger.debug(recompose_message["content"])
         summary = self.model.query([recompose_message])["message"]
         return summary
 
@@ -1394,6 +1391,8 @@ class DefaultAgent(AbstractAgent):
             traj_dir: Directory to save the trajectory to
         """
         self.setup(env=env, problem_statement=problem_statement, output_dir=output_dir)
+
+        self.logger.info(self.tools.config.bundles)
 
         n_steps = 0
 

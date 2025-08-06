@@ -49,8 +49,8 @@ agent:
     next_step_no_output_template: |-
       Your command ran successfully and did not produce any output.
     recompose_template: |-
-      You have followed the steps above to work toward solving a problem.
-      Now, your task is to output a short summary of your own progress up to this point.
+      You are given a partial trace that outlines the steps taken so far toward solving a task.
+      Your task is to output a short summary of your own progress up to this point.
       Write in the first person, as if you are explaining what you have done so far.
       Focus on the key steps you've taken, the discoveries you have made, and any intermediate insights.
       You may choose to retain useful code snippets or intermediate results that can be helpful for the next steps.
@@ -60,8 +60,14 @@ agent:
       Do not guess the final solution or go beyond the information you've already found.
       Clearly indicate the goals you have already completed.
       Write down the goals you plan to achieve as you continue to solve the task.
-      After you summarize your progress so far, you will lose access to the previous steps and will have to continue solving the task based on the summary you output.
+      After you summarize your progress so far, you will lose access to the trace and will have to continue solving the task based on the summary you output.
       Therefore, make sure to include all the relevant information in your summary and discard any unnecessary details.
+
+      Here is the task you are asked to solve:
+      {{problem_statement}}
+
+      Here are steps you have taken so far:
+      {{trace}}
 
       Now summarize your progress!
     summary_template: |-
@@ -86,6 +92,7 @@ agent:
       - path: tools/registry
       - path: tools/edit_anthropic
       - path: tools/review_on_submit_m
+      - path: tools/recompose
     registry_variables:
       USE_FILEMAP: 'true'
       SUBMIT_REVIEW_MESSAGES:

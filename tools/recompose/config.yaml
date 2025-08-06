@@ -1,0 +1,5 @@
+tools:
+  recompose:
+    signature: "recompose"
+    docstring: "Clears the previous steps and replaces them with a summary. After you complete a sub-goal or a milestone, you may call this tool to summarize your progress. That will help you remove obsolete and irrelevant information from your mind from previous steps. After you call this tool, you will receive a summary outlining your current progress in solving the task. After receiving the summary, you will lose access to the previous steps and will have to continue solving the task based on the summary."
+    arguments: []
