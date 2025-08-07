@@ -23,6 +23,7 @@ from tenacity import (
     retry_if_not_exception_type,
     stop_after_attempt,
     wait_random_exponential,
+    wait_fixed,
 )
 
 from sweagent import REPO_ROOT
@@ -55,9 +56,9 @@ _THREADS_THAT_USED_API_KEYS = []
 class RetryConfig(PydanticBaseModel):
     """This configuration object specifies how many times to retry a failed LM API call."""
 
-    retries: int = 20
+    retries: int = 500
     """Number of retries"""
-    min_wait: float = 10
+    min_wait: float = 5
     """Minimum wait time between retries (random exponential wait)"""
     max_wait: float = 120
     """Maximum wait time between retries (random exponential wait)"""
@@ -796,7 +797,8 @@ class LiteLLMModel(AbstractModel):
 
         for attempt in Retrying(
             stop=stop_after_attempt(self.config.retry.retries),
-            wait=wait_random_exponential(min=self.config.retry.min_wait, max=self.config.retry.max_wait),
+            # wait=wait_random_exponential(min=self.config.retry.min_wait, max=self.config.retry.max_wait),
+            wait=wait_fixed(wait=self.config.retry.min_wait),
             reraise=True,
             retry=retry_if_not_exception_type(
                 (

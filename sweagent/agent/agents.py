@@ -67,9 +67,10 @@ class TemplateConfig(BaseModel):
     instance_template: str = ""
     next_step_template: str = "Observation: {{observation}}"
 
-    auto_recompose_instructions: str = ""
+    initial_general_instructions: str = ""
+    initial_autorecompose_instructions: str = ""
     recompose_template: str = ""
-    summary_template: str = ""
+    post_recompose_template: str = ""
 
     next_step_truncated_observation_template: str = (
         "Observation: {{observation[:max_observation_length]}}<response clipped>"
@@ -156,7 +157,7 @@ class RecomposeConfig(BaseModel):
     This feature allows to recompose the agent's trajectory after a certain number of steps.
     """
     recompose: bool = False
-    type: Literal["manual-freq", "manual-tokens", "auto"] = "manual-freq"
+    type: Literal["manual-freq", "manual-tokens", "auto", "auto-tokens"] = "manual-freq"
     freq: int = 4
     tokens: int = 20000
 
@@ -782,10 +783,12 @@ class DefaultAgent(AbstractAgent):
         # Show instance template if prev. obs. was initial system message
 
         instance_template = self.templates.instance_template
-        if self.recompose_config.recompose and self.recompose_config.type == "auto":
-            instance_template += "\n\n" + Template(self.templates.auto_recompose_instructions).render()
+        instance_template += self.templates.initial_general_instructions
+        if self.recompose_config.recompose and "auto" in self.recompose_config.type:
+            instance_template += "\n\n" + self.templates.initial_autorecompose_instructions
 
         # templates = [self.templates.instance_template]
+
         templates = [instance_template]
         if self.templates.strategy_template is not None:
             templates.append(self.templates.strategy_template)
@@ -1292,11 +1295,13 @@ class DefaultAgent(AbstractAgent):
         #         messages.append(message)
         #     return messages
 
+        state=self.tools.get_state(self._env)
+
         recompose_message = {
             "role": "user",
             "content": Template(self.templates.recompose_template).render(
-                problem_statement=Template(self.templates.instance_template).render(**self._get_format_dict()),
-                trace=current_trace,
+                task=Template(self.templates.instance_template).render(**self._get_format_dict(**state)),
+                history=current_trace,
             ),
             "agent": self.name,
             "message_type": "observation",
@@ -1337,17 +1342,25 @@ class DefaultAgent(AbstractAgent):
                 recompose_now = True
                 self.auto_recompose = False
 
+            if self.recompose_config.type == "auto-tokens" and (self.auto_recompose or n_input_tokens >= self.recompose_config.tokens):
+                recompose_now = True
+                self.auto_recompose = False
+
             if recompose_now:
                 current_trace = self.messages.copy()
                 summary = self.recompose(current_trace[3:])
                 self.history = []
                 self.add_system_message_to_history()
                 self.add_demonstrations_to_history()
-                self.add_instance_template_to_history(state=self.tools.get_state(self._env))
+                # self.add_instance_template_to_history(state=self.tools.get_state(self._env))
+                state=self.tools.get_state(self._env)
                 self._append_history(
                     {
                         "role": "user",
-                        "content": Template(self.templates.summary_template).render(summary=summary),
+                        "content": Template(self.templates.post_recompose_template).render(
+                            task=Template(self.templates.instance_template).render(**self._get_format_dict(**state)),
+                            summary=summary,    
+                        ),
                         "agent": self.name,
                         "message_type": "summary",
                     }
