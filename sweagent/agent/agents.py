@@ -70,6 +70,7 @@ class TemplateConfig(BaseModel):
     initial_general_instructions: str = ""
     initial_autorecompose_instructions: str = ""
     recompose_template: str = ""
+    review_template: str = ""
     post_recompose_template: str = ""
 
     next_step_truncated_observation_template: str = (
@@ -784,8 +785,8 @@ class DefaultAgent(AbstractAgent):
 
         instance_template = self.templates.instance_template
         instance_template += self.templates.initial_general_instructions
-        if self.recompose_config.recompose and "auto" in self.recompose_config.type:
-            instance_template += "\n\n" + self.templates.initial_autorecompose_instructions
+        # if self.recompose_config.recompose and "auto" in self.recompose_config.type:
+            # instance_template += "\n\n" + self.templates.initial_autorecompose_instructions
 
         # templates = [self.templates.instance_template]
 
@@ -1260,6 +1261,7 @@ class DefaultAgent(AbstractAgent):
                 "response": step.output,
                 "thought": step.thought,
                 "summary": step.summary,
+                "review": step.review,
                 "execution_time": step.execution_time,
                 "state": step.state,
                 "query": step.query,
@@ -1268,6 +1270,58 @@ class DefaultAgent(AbstractAgent):
             },
         )
         self.trajectory.append(trajectory_step)
+
+    def review(self, current_trace):
+        """        
+        Review the agent's history and decide whether to recompose or continue.
+        """
+
+        ## Use this function below reduce the token count due to json formatting
+        def history_to_messages(history):
+            def get_role(history_item):
+                return history_item["role"]
+
+            messages = []
+            for history_item in history:
+                role = get_role(history_item)
+                if role == "tool":
+                    message = {
+                        "role": role,
+                        "content": history_item["content"],
+                        # Only one tool call per observations
+                        "tool_call_id": history_item["tool_call_ids"][0],  # type: ignore
+                    }
+                elif (tool_calls := history_item.get("tool_calls")) is not None:
+                    message = {"role": role, "content": history_item["content"], "tool_calls": tool_calls}
+                else:
+                    message = {"role": role, "content": history_item["content"]}
+                messages.append(message)
+            return messages
+        
+        state=self.tools.get_state(self._env)
+
+        review_message = {
+            "role": "user",
+            "content": Template(self.templates.review_template).render(
+                task=Template(self.templates.instance_template).render(**self._get_format_dict(**state)),
+                history=history_to_messages(current_trace),
+            ),
+            "agent": self.name,
+            "message_type": "observation",
+        }
+        self.logger.debug(review_message["content"])
+
+        is_valid = False
+        while not is_valid:
+            chat_message = self.model.query([review_message])["message"]
+            decision = chat_message.strip().lower()
+            if decision in ["<recompose>", "<continue>"]:
+                is_valid = True
+
+        if decision == "<recompose>":
+            return True
+        else:
+            return False
 
     def recompose(self, current_trace: list[dict[str, Any]]) -> str:
         """Recompose the agent's history into a summary."""
@@ -1330,21 +1384,48 @@ class DefaultAgent(AbstractAgent):
         n_input_tokens = self.model.stats.input_tokens
 
         if self.recompose_config.recompose and not self.submit_invoked:
-            if self.recompose_config.type == "manual-freq" and self.n_step % self.recompose_config.freq == 0:
+
+            # periodic recomposition
+            if self.recompose_config.type == "manual-freq" and self.n_step > 1 and self.n_step % self.recompose_config.freq == 0:
                 recompose_now = True
 
-            if self.recompose_config.type == "manual-tokens" and n_input_tokens >= self.recompose_config.tokens:
+            # context-overflow recomposition
+            if self.recompose_config.type == "manual-tokens" and self.n_step > 1 and n_input_tokens >= self.recompose_config.tokens:
                 recompose_now = True
 
-            if self.recompose_config.type == "auto" and self.auto_recompose:
+            # plan-based recomposition
+            if self.recompose_config.type == "auto-plan" and self.n_step > 1 and self.auto_recompose:
                 recompose_now = True
                 self.auto_recompose = False
 
-            if self.recompose_config.type == "auto-tokens" and (self.auto_recompose or n_input_tokens >= self.recompose_config.tokens):
-                recompose_now = True
-                self.auto_recompose = False
+            # critic-based recomposition (review step at every k steps)
+            if self.recompose_config.type == "auto-critic-freq" and self.n_step > 1 and self.n_step % self.recompose_config.freq == 0:
+                current_trace = self.messages.copy()
+                if self.prev_summary:
+                    recompose_now = self.review([self.prev_summary] + current_trace[2:])
+                else:
+                    recompose_now = self.review(current_trace[2:])
+                self.logger.debug(f"Critic decision: {"<recompose>" if recompose_now else "<continue>"}")
+
+                step_output = StepOutput()
+                step_output.review = "<recompose>" if recompose_now else "<continue>"
+                self.add_step_to_trajectory(step_output)
+
+            # critic-based recomposition (review step when context length exceeds k tokens)         
+            if self.recompose_config.type == "auto-critic-tokens" and self.n_step > 1 and n_input_tokens >= self.recompose_config.tokens:
+                current_trace = self.messages.copy()
+                if self.prev_summary:
+                    recompose_now = self.review([self.prev_summary] + current_trace[2:])
+                else:
+                    recompose_now = self.review(current_trace[2:])
+                self.logger.debug(f"Critic decision: {"<recompose>" if recompose_now else "<continue>"}")
+
+                step_output = StepOutput()
+                step_output.review = "<recompose>" if recompose_now else "<continue>"
+                self.add_step_to_trajectory(step_output)
 
             if recompose_now:
+                # recomposition take place here
                 current_trace = self.messages.copy()
                 if self.prev_summary:
                     summary = self.recompose([self.prev_summary] + current_trace[2:])

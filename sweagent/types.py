@@ -19,6 +19,7 @@ class StepOutput(BaseModel):
     output: str = ""
     observation: str = ""
     summary: str | None = None
+    review: str | None = None
     execution_time: float = 0.0
     done: bool = False
     exit_status: int | str | None = None
